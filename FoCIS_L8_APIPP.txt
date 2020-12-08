@@ -1,0 +1,288 @@
+// ---------------------------------------------------------------
+// File: 2019Sum_GSFC_NewYorkEcoII_FoCIS_L8_APIPP.txt
+// Name: FoCIS (Forecasting to Combat Invasive Species)
+// Date: August 8, 2019
+// Contact: Rya Inman, ryainman16@gmail.com
+// -----------------
+// Description: Model to compute predicted habitat distribution of Eastern Hemlock in the Adirondacks using:
+// 		NDVI (from Landsat 8 OLI), NLCD, New York Linear Hydrography, 
+//              DEM, SMAP, SSURGO Soil Acidity, and ground-truthed training data from Adirondack
+//              Park Invasive Plant Program and New York Natural Heritage Program
+//              
+// Usage: This code is scripted to run in Google Earth Engine to create a habitat distribution
+//        map of Eastern Hemlock in the Adirondacks. This will produce hemlock dominance in 4
+//        categories: 0 = No Hemlock, 1 = Hemlock Sub Dominant, 2 = Hemlock Dominant, 3 = Pure Hemlock
+//        Requires 
+// Parameters:
+//   In: Red and NIR bands from Landsat 8 OLI, NLCD, New York Linear Hydrography, 
+//              DEM, SMAP, SSURGO Soil Acidity, ground-truthed training data of hemlock
+//              presence from Adirondack Park Invasive Plant Program and 
+//              New York Natural Heritage Program and outline of Adirondack Park
+//   Out: Returns raster layer of hemlock distribution
+// ---------------------------------------------------------------
+// 
+// Import records:
+// var l8_SR: ImageCollection "USGS Landsat 8 Surface Reflectance Tier 1"
+// var SRTM: Image "SRTM Digital Elevation Data 30m"
+// var SMAP: ImageCollection "NASA-USDA SMAP Global Soil Moisture Data"
+// var geometry: [[ draw a box around the study region -- used for exporting final results ]]
+// var distStream: Image [[ import the euclidean distance raster provided in handoff package - source: NYS GIS Clearinghouse]]
+// var NLCD: ImageCollection "NLCD: USGS National Land Cover Database"
+// var allValid: Table [[ import 20 percent points for validation shapefile as table ]]
+// var allTrain: Table [[ import 80 percent points for validation shapefile as table ]]
+// var apipp: Table [[ import APIPP boundary shapefile as table ]]
+// acidSoils: Image [[ import soil acidity raster provided in handoff package - source: USDA SSURGO]]
+// ===================================================================================================================
+//======================== Get leaf off and leaf on least-cloudy mosaics ============================================
+// Leaf off - "LOF"
+var l8_SR_2016_LOF = l8_SR.filterDate('2016-01-01','2016-03-30');
+var l8_SR_2017_LOF = l8_SR.filterDate('2017-01-01','2017-03-30');
+var l8_SR_2018_LOF = l8_SR.filterDate('2018-01-01','2018-03-30');
+var l8_SR_2019_LOF = l8_SR.filterDate('2019-01-01','2019-03-30');
+
+//Leaf on - "LON"
+// (earlier leaf on period used for 2019 to get available scenes at time of script creation)
+
+var l8_SR_2016_LON = l8_SR.filterDate('2016-06-01','2016-08-31');
+var l8_SR_2017_LON = l8_SR.filterDate('2017-06-01','2017-08-31');
+var l8_SR_2018_LON = l8_SR.filterDate('2018-06-01','2018-08-31');
+var l8_SR_2019_LON = l8_SR.filterDate('2019-05-20','2019-06-18');
+
+// merge all years of LEAF ON and LEAF OFF -------------------------------------------------------------------------
+
+var l8_SR_LEAFOFFa = l8_SR_2016_LOF
+  .merge(l8_SR_2017_LOF)
+  .merge(l8_SR_2018_LOF)
+  .merge(l8_SR_2019_LOF)
+  .filterBounds(apipp);
+
+var l8_SR_LEAFONa = l8_SR_2016_LON
+  .merge(l8_SR_2017_LON)
+  .merge(l8_SR_2018_LON)
+  .merge(l8_SR_2019_LON)
+  .filterBounds(apipp);
+
+// function to mask clouds -----------------------------------------------------------------------------------------
+
+function maskCloud(img){
+  var clear = img.select('pixel_qa').bitwiseAnd(2).neq(0);
+  return img.updateMask(clear);
+}
+
+var l8_SR_LEAFOFF_leastCloudy = l8_SR_LEAFOFFa.map(maskCloud);
+var l8_SR_LEAFON_leastCloudy = l8_SR_LEAFONa.map(maskCloud);
+
+print(l8_SR_LEAFOFF_leastCloudy,'least');
+
+// Get newest images to create up-to-date least cloudy LEAF ON and LEAF OFF mosaics ------
+var recentLEAFOFFa = l8_SR_LEAFOFF_leastCloudy.qualityMosaic('pixel_qa');
+var recentLEAFONa = l8_SR_LEAFON_leastCloudy.qualityMosaic('pixel_qa');
+
+// Add NDVI information as band to satellite imagery -----------------------------------------------------------------
+
+// Use .normalizedDifference command with L8 nir and red bands (B5 and B4, respectively)
+// to calculate NDVI on recentLEAFOFF least-cloudy mosaic and highlight evergreen forested areas
+
+var NDVI = recentLEAFOFFa.normalizedDifference(['B5','B4']).rename('NDVI');
+print(NDVI,'ndvi');
+var recentLEAFOFF = recentLEAFOFFa.addBands(NDVI); // to use later for NDVI mask
+var recentLEAFON = recentLEAFONa.addBands(NDVI); // to include as band in RF classification
+
+// Add Dist to Stream as a band --------------------------------------------------------------------------------------
+
+var streamDist = distStream.select(['b1']).rename('ST');
+var toClassify = recentLEAFON.addBands(streamDist);
+print(toClassify,'image to input into RF classifier');
+
+// add mosaics to map -- for visualziation purposes only; does not affect data
+// var vizParams = {bands: ['B5', 'B4', 'B3'], min: 0, max: 3000};
+//Map.addLayer(recentLEAFOFF, vizParams, 'LEAF OFF 2016-2019', false);
+//Map.addLayer(recentLEAFON, vizParams, 'LEAF ON 2016-2019', false);
+
+
+//============ Sampling composite "image" with training data set ==========================================
+
+// Overlay the apTrains points on the imagery to get training data.
+var trainingFull = toClassify.sampleRegions({
+  collection:apTrains,
+  properties:['DominanceN'],
+  scale:30
+});
+
+//====================== Masking for parameters ===========================================================
+
+//We included masks for: 
+// Elevation (SRTM), 
+// Aspect (SRTM), 
+// Soil Moisture (SMAP), 
+// Soil Acidity (SSURGO USDA), 
+// NDVI (normalized diff veg index), 
+// and NLCD (USGS)
+
+//elevation-----------------------------------
+var srtmClip = SRTM.clip(apipp);
+var elevationMask = srtmClip.lt(731);
+
+// Get the aspect (in degrees)--------------------------
+var aspect = ee.Terrain.aspect(SRTM);
+
+// Convert to radians, compute the sin of the aspect.
+var sinImage = aspect.divide(180).multiply(Math.PI).sin();
+
+// Pull out North and Northwest facing aspects
+var aspectMask = sinImage.lt(0.39);
+var aspectMask2 = sinImage.gt(-.93);
+
+// NDVI Greater than 0 ----------------------------------
+var NDVIMedLOFF = recentLEAFOFF.select('NDVI');
+print(NDVIMedLOFF,'LOFF');
+var NDVIOFFMask = NDVIMedLOFF.gt(0);
+
+// NLCD = Forest cover ----------------------------------
+// Create dictionary to change formatting of landcover band to readable data type
+var bandDict = ee.Dictionary({
+  'landcover': 'int16'
+});
+
+// Pull out only 2016 NLCD data, discarding other years
+var nlcd2016 = ee.Image('USGS/NLCD/NLCD2016');
+
+// Create layer for Forest Cover by pulling out class values 41, 42, and 43
+// https://www.mrlc.gov/data/legends/national-land-cover-database-2016-nlcd2016-legend
+var nlcdCast = nlcd2016.cast(bandDict);
+var NLCDMaska = nlcdCast.select('landcover').eq(42);
+var NLCDMaskb = nlcdCast.select('landcover').eq(41);
+var NLCDMaskc = nlcdCast.select('landcover').eq(43);
+
+//Add masks together to create one mask for forest cover
+var NLCDMask = NLCDMaska.add(NLCDMaskb).add(NLCDMaskc);
+
+//soil moisture------------------
+
+//Get leaf off and leaf on SMAP info
+//Leaf off - LOF SMAP
+var SM_2016_LOF = SMAP.filterDate('2016-01-01','2016-03-30');
+var SM_2017_LOF = SMAP.filterDate('2017-01-01','2017-03-30');
+var SM_2018_LOF = SMAP.filterDate('2018-01-01','2018-03-30');
+var SM_2019_LOF = SMAP.filterDate('2019-01-01','2019-03-30');
+
+//Leaf on - LON SMAP -- earlier leaf on period for 2019 to get available scenes
+
+var SM_2016_LON = SMAP.filterDate('2016-06-01','2016-08-31');
+var SM_2017_LON = SMAP.filterDate('2017-06-01','2017-08-31');
+var SM_2018_LON = SMAP.filterDate('2018-06-01','2018-08-31');
+var SM_2019_LON = SMAP.filterDate('2019-05-20','2019-06-18');
+
+// merge all years of LEAF ON and LEAF OFF
+
+var SM_LEAFOFF = SM_2016_LOF
+  .merge(SM_2017_LOF)
+  .merge(SM_2018_LOF)
+  .merge(SM_2019_LOF)
+  .filterBounds(apipp);
+
+var SM_LEAFON = SM_2016_LON
+  .merge(SM_2017_LON)
+  .merge(SM_2018_LON)
+  .merge(SM_2019_LON)
+  .filterBounds(apipp);
+
+
+//Calculate median "soil moisture index" value
+var soilMedLOFF = SM_LEAFOFF.median().select('smp');
+
+var soilMedLON = SM_LEAFON.median().select('smp');
+
+//Filter out soil moisture levels below 0.5 
+var soilLOFFMask = soilMedLOFF.gte(0.5);
+
+var soilLONMask = soilMedLON.gte(0.5);
+
+// Display
+var soilMoistureVis = {
+  min: 0,
+  max: .5,
+  palette: ['0300ff', '418504', 'efff07', 'efff07', 'ff0303'],
+};
+
+//Map.addLayer(soilLOFFMask, soilMoistureVis, 'Soils Leaf Off', false);
+//Map.addLayer(soilLONMask, soilMoistureVis, 'Soils Leaf On', false);
+
+// Soil Acidity ---------------------------------------------------------------------------------------------
+
+var acidic = acidSoils.lte(6.5);
+
+//Map.addLayer(acidic,{min:0,max:1, palette:['0000FF']},'Acidic Soils', false);
+
+//Visualize Euclidean Distance to Streams-------------------------
+
+var palettes = require('users/gena/packages:palettes');
+var palette = palettes.kovesi.linear_blue_5_95_c73[7];
+//Map.addLayer(distStream.clip(apipp), {min:0,max:10000,palette:palette},'Streams');
+
+//========================== Adding parameters to Random Forest ==============================================
+
+//Create list of bands to add to classifier
+var bands = ['B4','B3','B2','B5','ST'];
+
+//Train Random Forest Model with Dominance 0-3
+var trainedRF = ee.Classifier.randomForest(
+  {
+numberOfTrees:10,
+  variablesPerSplit:0,
+  minLeafPopulation:1,
+  bagFraction:0.5,
+  outOfBagMode:false,
+  seed:7}).train(trainingFull, 'DominanceN', bands);
+
+//Classify results of Random Forest
+var classifiedRF = toClassify.classify(trainedRF);
+
+//Visualize results of Random Forest
+// Map.addLayer(classifiedRF,{min:0,max:1, palette:['green','blue','red']})
+
+// Get a confusion matrix representing resubstitution accuracy.
+var trainAccuracy = trainedRF.confusionMatrix();
+print('Resubstitution error matrix: ', trainAccuracy);
+print('Training overall accuracy: ', trainAccuracy.accuracy());
+
+//Add Masks to Random Forest results to mask out parameters of interest
+
+var classifiedNew = 
+  classifiedRF
+  .updateMask(elevationMask)
+  .updateMask(aspectMask)
+  .updateMask(aspectMask2)
+  .updateMask(soilLOFFMask)
+  .updateMask(NLCDMask)
+  .updateMask(NDVIOFFMask)
+  .updateMask(acidic);
+
+//Visualize results
+Map.addLayer(classifiedNew,
+  {min: .1, max: 3.9, palette: ['F0000F', 'FF0000','00FF00','0000FF']},
+  'RF classification');
+
+// Get a confusion matrix representing resubstitution accuracy.
+var trainAccuracy = trainedRF.confusionMatrix();
+print('Resubstitution error matrix: ', trainAccuracy);
+print('Training overall accuracy: ', trainAccuracy.accuracy());
+
+//Extract classification at each validation point 
+var pixels = classifiedNew.reduceRegions({
+    collection:apValids,
+    reducer: 'mean',
+    scale: 30
+});
+
+//Export classifications to table for accuracy assessment
+
+Export.table.toDrive(pixels);
+
+//Extract habitat distribution model to GeoTIFF
+Export.image.toDrive({
+  image: classifiedNew,
+  region: geometry, 
+  scale: 30,
+  maxPixels: 1e13, 
+  fileFormat: 'GeoTIFF' });

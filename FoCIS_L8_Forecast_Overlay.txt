@@ -1,0 +1,216 @@
+// ---------------------------------------------------------------
+// File: 2019Sum_GSFC_NewYorkEcoII_FoCIS_Overlay_2049.txt
+// Name: FoCIS (Forecasting to Combat Invasive Species)
+// Date: August 8, 2019
+// Contact: Rya Inman, ryainman16@gmail.com
+// -----------------
+// Description: Model to forecasted predicted Hemlock Woolly Adelgid (HWA) distribution in New York State through 2049 using:
+// 		Ground-truthed HWA presence data from iMapInvasives and USGS BISON (citizen science data) from 2009-2017. 
+//		This field data is buffered according to observed linear rates of spread of HWA from scientific literature,
+//		then overlaid with NASA temperature projection data and finally with the present day hemlock distribution map.
+//		The final product is a map depicting predicted HWA spread to 2049 and predicted unaffected hemlock remaining in 2049.
+//
+//              
+// Usage: This code is scripted to run in Google Earth Engine to create a habitat spread prediction
+//        map of HWA in New York State. This will produce a map of HWA spread and remaining un-infested hemlock in 2049.
+//        
+// Parameters:
+//   In: HWA presence data from iMapInvasives and USGS BISON, 
+//	 NASA NEX-DCP30 temperature projections for 2046-2049,
+//	 Hemlock distribution map from FoCIS model (see attached scripts)
+//
+//   Out: Returns raster layer of HWA distribution,
+//	  which can be subtracted from hemlock distribution
+//	  for remaining hemlock still unaffected by HWA in 2049
+// ---------------------------------------------------------------
+// 
+// Import records:
+// var geometry: [[ draw a box around the study region -- used for exporting final results ]]
+// var nys: Table [[ import APIPP boundary shapefile as table ]]
+// var HWA30raster: Image [[ import raster layer made from polygon of buffered HWA presence data with calculated linear spread over 30 years ]]
+// var hemDist: Image [[ import hemlock distribution output from L8_NYS model ]]
+// var NEX: ImageCollection "NEX-DCP30: NASA Earth Exchange Downscaled Climate Projections"
+// ===================================================================================================================
+//-----------------------2017-2027 Winter Periods-----------------------//
+var NEX_2017_W = NEX.filterDate('2017-12-01','2018-02-28' ).min().select('tasmin');
+var NEX_2018_W = NEX.filterDate('2018-12-01','2019-02-28' ).min().select('tasmin');
+var NEX_2019_W = NEX.filterDate('2019-12-01','2020-02-28' ).min().select('tasmin');
+var NEX_2020_W = NEX.filterDate('2020-12-01','2021-02-28' ).min().select('tasmin');
+var NEX_2021_W = NEX.filterDate('2021-12-01','2022-02-28' ).min().select('tasmin');
+var NEX_2022_W = NEX.filterDate('2022-12-01','2023-02-28' ).min().select('tasmin');
+var NEX_2023_W = NEX.filterDate('2023-12-01','2024-02-28' ).min().select('tasmin');
+var NEX_2024_W = NEX.filterDate('2024-12-01','2025-02-28' ).min().select('tasmin');
+var NEX_2025_W = NEX.filterDate('2025-12-01','2026-02-28' ).min().select('tasmin');
+var NEX_2026_W = NEX.filterDate('2026-12-01','2027-02-28' ).min().select('tasmin');
+
+print(NEX_2017_W, 'nex 2017 W');
+
+var winter17 = NEX_2017_W.gt(253.15);
+print(winter17, 'winter 17');
+var winter18 = NEX_2018_W.gt(253.15);
+var winter19 = NEX_2019_W.gt(253.15);
+var winter20 = NEX_2020_W.gt(253.15);
+var winter21 = NEX_2021_W.gt(253.15);
+var winter22 = NEX_2022_W.gt(253.15);
+var winter23 = NEX_2023_W.gt(253.15);
+var winter24 = NEX_2024_W.gt(253.15);
+var winter25 = NEX_2025_W.gt(253.15);
+var winter26 = NEX_2026_W.gt(253.15);
+
+var win17to26 = ee.ImageCollection([winter17,winter18,winter19,winter20,
+  winter21,winter22,winter23,winter24,winter25,winter26]);
+
+print(win17to26, 'winter 17 to 26')
+
+var winterMask10 = win17to26.reduce(ee.Reducer.min());
+
+// var NEX_DECADE1 = ee.ImageCollection([NEX_2017_W,NEX_2018_W,NEX_2019_W
+//                 ,NEX_2020_W,NEX_2021_W,NEX_2022_W,NEX_2023_W,
+//                 NEX_2024_W,NEX_2025_W,NEX_2026_W])
+//                 .filterBounds(HWA10);
+                
+//var winterMask = NEX_DECADE1.reduce(ee.Reducer.median());
+// var NEX_DECADE1_median = NEX_DECADE1.median(); 
+
+Map.addLayer(winterMask10, {palette: ['0000FF'], min: 0, max: 350}, 'NEX Decade 1',false);
+
+// print (NEX_DECADE1_median, 'NEX DECADE 1');
+
+
+//-----------------------2027-2037 Winter Periods-----------------------//
+var NEX_2027_W = NEX.filterDate('2027-12-01','2028-02-28' ).filterBounds(HWA20).min().select('tasmin');
+var NEX_2028_W = NEX.filterDate('2028-12-01','2029-02-28' ).filterBounds(HWA20).min().select('tasmin');
+var NEX_2029_W = NEX.filterDate('2029-12-01','2030-02-28' ).filterBounds(HWA20).min().select('tasmin');
+var NEX_2030_W = NEX.filterDate('2030-12-01','2031-02-28' ).filterBounds(HWA20).min().select('tasmin');
+var NEX_2031_W = NEX.filterDate('2031-12-01','2032-02-28' ).filterBounds(HWA20).min().select('tasmin');
+var NEX_2032_W = NEX.filterDate('2032-12-01','2033-02-28' ).filterBounds(HWA20).min().select('tasmin');
+var NEX_2033_W = NEX.filterDate('2033-12-01','2034-02-28' ).filterBounds(HWA20).min().select('tasmin');
+var NEX_2034_W = NEX.filterDate('2034-12-01','2035-02-28' ).filterBounds(HWA20).min().select('tasmin');
+var NEX_2035_W = NEX.filterDate('2035-12-01','2036-02-28' ).filterBounds(HWA20).min().select('tasmin');
+var NEX_2036_W = NEX.filterDate('2036-12-01','2037-02-28' ).filterBounds(HWA20).min().select('tasmin');
+
+// var NEX_DECADE2 = NEX_2027_W
+//                 .merge(NEX_2028_W)
+//                 .merge(NEX_2029_W)
+//                 .merge(NEX_2030_W)
+//                 .merge(NEX_2031_W)
+//                 .merge(NEX_2032_W)
+//                 .merge(NEX_2033_W)
+//                 .merge(NEX_2034_W)
+//                 .merge(NEX_2035_W)
+//                 .merge(NEX_2036_W)
+//                 .filterBounds(HWA20);
+
+var win27 = NEX_2027_W.gt(253.15);
+var win28 = NEX_2028_W.gt(253.15);
+var win29 = NEX_2029_W.gt(253.15);
+var win30 = NEX_2030_W.gt(253.15);
+var win31 = NEX_2031_W.gt(253.15);
+var win32 = NEX_2032_W.gt(253.15);
+var win33 = NEX_2033_W.gt(253.15);
+var win34 = NEX_2034_W.gt(253.15);
+var win35 = NEX_2035_W.gt(253.15);
+var win36 = NEX_2036_W.gt(253.15);
+
+var win27to36 = ee.ImageCollection([win27, win28, win29, win30, win31,win32, 
+  win32, win33,win34,win35,win36]);
+
+var winterMask20 = win27to36.reduce(ee.Reducer.min());
+
+
+// var NEX_DECADE2_median = NEX_DECADE2.median(); 
+
+// Map.addLayer(NEX_DECADE2_median, {bands: ['tasmin'], palette: ['0000FF'], min: 0, max: 350},  "nex Decade 2",false);
+
+// print (NEX_DECADE2_median, 'NEX DECADE 2');
+
+//-----------------------2037-2047 Winter Periods-----------------------//
+var NEX_2037_W = NEX.filterDate('2037-12-01','2038-02-28' ).filterBounds(HWA30).min().select('tasmin');
+var NEX_2038_W = NEX.filterDate('2038-12-01','2039-02-28' ).filterBounds(HWA30).min().select('tasmin');
+var NEX_2039_W = NEX.filterDate('2039-12-01','2040-02-28' ).filterBounds(HWA30).min().select('tasmin');
+var NEX_2040_W = NEX.filterDate('2040-12-01','2041-02-28' ).filterBounds(HWA30).min().select('tasmin');
+var NEX_2041_W = NEX.filterDate('2041-12-01','2042-02-28' ).filterBounds(HWA30).min().select('tasmin');
+var NEX_2042_W = NEX.filterDate('2042-12-01','2043-02-28' ).filterBounds(HWA30).min().select('tasmin');
+var NEX_2043_W = NEX.filterDate('2043-12-01','2044-02-28' ).filterBounds(HWA30).min().select('tasmin');
+var NEX_2044_W = NEX.filterDate('2044-12-01','2045-02-28' ).filterBounds(HWA30).min().select('tasmin');
+var NEX_2045_W = NEX.filterDate('2045-12-01','2046-02-28' ).filterBounds(HWA30).min().select('tasmin');
+var NEX_2046_W = NEX.filterDate('2046-12-01','2047-02-28' ).filterBounds(HWA30).min().select('tasmin');
+
+
+// var NEX_DECADE3 = NEX_2037_W
+//                 .merge(NEX_2038_W)
+//                 .merge(NEX_2039_W)
+//                 .merge(NEX_2040_W)
+//                 .merge(NEX_2041_W)
+//                 .merge(NEX_2042_W)
+//                 .merge(NEX_2043_W)
+//                 .merge(NEX_2044_W)
+//                 .merge(NEX_2045_W)
+//                 .merge(NEX_2046_W)
+//                 .filterBounds(HWA30);
+                
+
+// var NEX_DECADE3_median = NEX_DECADE3.median(); 
+
+var win37 = NEX_2037_W.gt(253.15);
+var win38 = NEX_2038_W.gt(253.15);
+var win39 = NEX_2039_W.gt(253.15);
+var win40 = NEX_2040_W.gt(253.15);
+var win41 = NEX_2041_W.gt(253.15);
+var win42 = NEX_2042_W.gt(253.15);
+var win43 = NEX_2043_W.gt(253.15);
+var win44 = NEX_2044_W.gt(253.15);
+var win45 = NEX_2045_W.gt(253.15);
+var win46 = NEX_2046_W.gt(253.15);
+
+var win37to46 = ee.ImageCollection([win37, win38, win39, win40, win41,win42, 
+  win42, win43,win44,win45,win46]);
+
+var winterMask30 = win37to46.reduce(ee.Reducer.min());
+
+
+//Map.addLayer(NEX_DECADE3_median, {bands: ['tasmin'], palette: ['0000FF'], min: 0, max: 350}, 'nex decade 3',false);
+
+//print (NEX_DECADE3_median, 'NEX DECADE 3');
+
+//------------------------------------------------Parameters---------------------------------------------//
+//var tempMask10 = NEX_DECADE1_median.gte(253.15);
+//var tempMask20 = NEX_DECADE2_median.gte(253.15);
+//var tempMask30 = NEX_DECADE3_median.gte(253.15);
+
+var hemPres = hemDist.select("b1").gte(ee.Number(1));
+//print(hemPres,'pres');
+
+// var Forecasted10 = 
+//     NEX_DECADE1_median.updateMask(tempMask10).updateMask(hemPres);
+    
+// var Forecasted20 =   
+//     NEX_DECADE2_median.updateMask(tempMask20).updateMask(hemPres);
+    
+// var Forecasted30 =   
+//     NEX_DECADE3_median.updateMask(tempMask30).updateMask(hemPres);
+
+var Forecasted10 = 
+    hemPres.updateMask(winterMask10).updateMask(HWA10raster);
+    
+var Forecasted20 =   
+    hemPres.updateMask(winterMask20).updateMask(HWA20raster);
+    
+var Forecasted30 =   
+    hemPres.updateMask(winterMask30).updateMask(HWA30raster);
+    
+
+//Map.addLayer(hemDist.clip(NYState), {palette: ['FFFFFF','FF0000', '159897', '008080'],min:0.1,max:3.9}, 'hemlock distribution map');    
+Map.addLayer(Forecasted10, {palette: ['FFFFFF', '0000FF'], min: 0, max: 1}, 'Forecast for 10 Years' );
+Map.addLayer(Forecasted20, {palette: ['FFFFFF', '0000FF'], min: 0, max: 1}, 'Forecast for 20 Years' );
+Map.addLayer(Forecasted30, {palette: ['FFFFFF', '0000FF'], min: 0, max:1}, 'Forecast for 30 Years' );
+
+//--------------------------------Export--------------------------//
+
+Export.image.toDrive({
+  image: Forecasted30,
+  region: geometry,
+  scale:30,
+  maxPixels: 1e13,
+  fileFormat: 'GeoTIFF'
+});

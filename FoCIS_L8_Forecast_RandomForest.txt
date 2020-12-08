@@ -1,0 +1,397 @@
+// ---------------------------------------------------------------
+// File: 2019Sum_GSFC_NewYorkEcoII_FoCIS_RandomForest_2049.txt
+// Name: FoCIS (Forecasting to Combat Invasive Species)
+// Date: August 8, 2019
+// Contact: Rya Inman, ryainman16@gmail.com
+// -----------------
+// Description: Model to forecasted predicted Hemlock Woolly Adelgid (HWA) distribution in New York State through 2049 using:
+// 		Ground-truthed HWA presence data from iMapInvasives and USGS BISON (citizen science data) from 2009-2017. 
+// 		NDVI (from Landsat 8 OLI), NLCD, New York Linear Hydrography (as distance to stream), DEM for elevation and aspect, 
+//		SMAP, SSURGO Soil Acidity, NASA temperature projection data, and present day hemlock distribution map.
+//		The final product is a map depicting predicted HWA spread to 2049 and predicted unaffected hemlock remaining in 2049.
+//
+//              
+// Usage: This code is scripted to run in Google Earth Engine to create a habitat spread prediction
+//        map of HWA in New York State. This will allow the user to produce a map of HWA spread and 
+//	  remaining un-infested hemlock in 2049.
+//        
+// Parameters:
+//   In: HWA presence data from iMapInvasives and USGS BISON (as training data), 
+//	 NASA NEX-DCP30 temperature projections for 2046-2049 (present day for training, future for classification),
+/	 NDVI, distance to streams, NLCD forest cover, elevation, aspect, soil moisture, soil acidity, and
+//	 Hemlock distribution map from FoCIS model (see attached scripts)
+//
+//   Out: Returns classified raster layer of HWA distribution,
+//	  which can be subtracted from hemlock distribution
+//	  for remaining hemlock still unaffected by HWA in 2049
+// ---------------------------------------------------------------
+// 
+// Import records:
+// var geometry: [[ draw a box around the study region -- used for exporting final results ]]
+// var l8_SR: ImageCollection "USGS Landsat 8 Surface Reflectance Tier 1"
+// var SRTM: Image "SRTM Digital Elevation Data 30m"
+// var SMAP: ImageCollection "NASA-USDA SMAP Global Soil Moisture Data"
+// var distStream: Image [[ import the euclidean distance raster provided in handoff package - source: NYS GIS Clearinghouse]]
+// var NLCD: ImageCollection "NLCD: USGS National Land Cover Database"
+// acidSoils: Image [[ import soil acidity raster provided in handoff package - source: USDA SSURGO]]
+// var nys: Table [[ import APIPP boundary shapefile as table ]]
+// var hemDist: Image [[ import hemlock distribution output from L8_NYS model ]]
+// var HWAPres: Table [[ import iMap and BISON HWA presence points provided as shapefile ]]
+// var NEX: ImageCollection "NEX-DCP30: NASA Earth Exchange Downscaled Climate Projections"
+// ===================================================================================================================
+//======================== Get leaf off and leaf on least-cloudy mosaics ============================================
+
+// Leaf off - "LOF"
+var l8_SR_2016_LOF = l8_SR.filterDate('2016-01-01','2016-03-30');
+var l8_SR_2017_LOF = l8_SR.filterDate('2017-01-01','2017-03-30');
+var l8_SR_2018_LOF = l8_SR.filterDate('2018-01-01','2018-03-30');
+var l8_SR_2019_LOF = l8_SR.filterDate('2019-01-01','2019-03-30');
+
+//Leaf on - "LON"
+// (earlier leaf on period used for 2019 to get available scenes at time of script creation)
+
+var l8_SR_2016_LON = l8_SR.filterDate('2016-06-01','2016-08-31');
+var l8_SR_2017_LON = l8_SR.filterDate('2017-06-01','2017-08-31');
+var l8_SR_2018_LON = l8_SR.filterDate('2018-06-01','2018-08-31');
+var l8_SR_2019_LON = l8_SR.filterDate('2019-05-20','2019-06-18');
+
+// merge all years of LEAF ON and LEAF OFF -------------------------------------------------------------------------
+
+var l8_SR_LEAFOFFa = l8_SR_2016_LOF
+  .merge(l8_SR_2017_LOF)
+  .merge(l8_SR_2018_LOF)
+  .merge(l8_SR_2019_LOF)
+  .filterBounds(nys);
+
+var l8_SR_LEAFONa = l8_SR_2016_LON
+  .merge(l8_SR_2017_LON)
+  .merge(l8_SR_2018_LON)
+  .merge(l8_SR_2019_LON)
+  .filterBounds(nys);
+
+// function to mask clouds -----------------------------------------------------------------------------------------
+
+function maskCloud(img){
+  var clear = img.select('pixel_qa').bitwiseAnd(2).neq(0);
+  return img.updateMask(clear);
+}
+
+var l8_SR_LEAFOFF_leastCloudy = l8_SR_LEAFOFFa.map(maskCloud);
+var l8_SR_LEAFON_leastCloudy = l8_SR_LEAFONa.map(maskCloud);
+
+print(l8_SR_LEAFOFF_leastCloudy,'least');
+
+// Get newest images to create up-to-date least cloudy LEAF ON and LEAF OFF mosaics
+
+var recentLEAFOFFa = l8_SR_LEAFOFF_leastCloudy.qualityMosaic('pixel_qa');
+var recentLEAFONa = l8_SR_LEAFON_leastCloudy.qualityMosaic('pixel_qa');
+
+// Add NDVI information as band to satellite imagery -------------------------------------
+// // First - function to map NDVI calculation to all images in L8 Image Collections
+// // Next - map the function to Leaf On and Leaf Off Image Collections
+
+var NDVI = recentLEAFOFFa.normalizedDifference(['B5','B4']).rename('NDVI');
+print(NDVI,'ndvi');
+var recentLEAFOFF = recentLEAFOFFa.addBands(NDVI);
+var recentLEAFON = recentLEAFONa.addBands(NDVI);
+
+// Add Dist to Stream as a band--------------------------
+
+var streamDist = distStream.select(['b1']).rename('ST');
+var presentday = recentLEAFON.addBands(streamDist);
+
+// NEX-DCP30 Climate data present day for training model
+var winter2015 = NEXDCP30.filterDate('2015-12-01','2016-02-28').median().select('tasmin');
+var winter2016 = NEXDCP30.filterDate('2016-12-01','2017-02-28').median().select('tasmin');
+var winter2017 = NEXDCP30.filterDate('2017-12-01','2018-02-28').median().select('tasmin');
+var winter2018 = NEXDCP30.filterDate('2018-12-01','2019-02-28').median().select('tasmin');
+
+//print(winter2015, 'NEX DCP30 winter 2016 median');
+//Map.addLayer(winter2015)
+
+var presentdayALL = presentday
+  .addBands(winter2015)
+  .addBands(winter2016)
+  .addBands(winter2017)
+  .addBands(winter2018);
+
+// add mosaics to map
+var vizParams = {bands: ['B5', 'B4', 'B3'], min: 0, max: 3000};
+//Map.addLayer(recentLEAFOFF, vizParams, 'LEAF OFF 2016-2019', false);
+//Map.addLayer(recentLEAFON, vizParams, 'LEAF ON 2016-2019', false);
+
+
+//--------------------------------------------------RandomForest Bands-------------------------------------------------------------------
+
+print(HWAPres80, 'the data that Rya made not Abigail so it will be different duh');
+// Overlay the points on the imagery to get training.
+var trainingFull = presentdayALL.sampleRegions({
+  collection:HWAPres80,
+  properties:['HWAPres'],
+  scale:30
+});
+
+print(trainingFull,'sample from present day img');
+
+//------------------------------------Masking for parameters----------------------------------------------------------
+// We included Elevation, Aspect, Soil Moisture, Soil Acidity, NDVI, and NLCD (forest cover)
+
+// Elevation-----------------------------------
+var srtmClip = SRTM.clip(nys);
+
+//Map.addLayer(srtmClip,{min:0, max:730},'SRTM Elevation',false);
+
+var elevationMask = srtmClip.lt(731);
+
+// Get the aspect (in degrees)--------------------------
+var aspect = ee.Terrain.aspect(SRTM);
+
+// Convert to radians, compute the sin of the aspect.
+var sinImage = aspect.divide(180).multiply(Math.PI).sin();
+
+// Pull out North and Northwest facing aspects
+var aspectMask = sinImage.lt(0.39);
+var aspectMask2 = sinImage.gt(-.93);
+
+//Map.addLayer(sinImage.updateMask(aspectMask).updateMask(aspectMask2), {min: -1, max: 1}, 'sin', false);
+
+// NDVI Greater than 0, indicating presence of evergreens in leaf-off season ----------------------------------
+var NDVIMedLOFF = recentLEAFOFF.select('NDVI');
+
+var NDVIOFFMask = NDVIMedLOFF.gt(0);
+//Map.addLayer(NDVIOFFMask, {min:0,max:0.2, palette:['0000FF','FF0000']},'NDVI Pos',false);
+
+// NLCD = Forest cover ----------------------------------
+// Create dictionary to change formatting of landcover band to readable band
+var bandDict = ee.Dictionary({
+  'landcover': 'int16'
+});
+
+//Pull out 2016 NLCD data -- as Image in import record
+
+// Create layer for Forest Cover 
+// with "landcover" (band 0) values equal to 41, 42, and 43 
+var nlcdCast = nlcd2016.cast(bandDict);
+var NLCDMaska = nlcdCast.select('landcover').eq(42);
+print(NLCDMaska,'nlcdmask');
+var NLCDMaskb = nlcdCast.select('landcover').eq(41);
+var NLCDMaskc = nlcdCast.select('landcover').eq(43);
+
+//Add masks together to create one mask for forest cover
+var NLCDMask = NLCDMaska.add(NLCDMaskb).add(NLCDMaskc);
+print(NLCDMask,'masked');
+
+// Soil moisture data (SMAP)------------------
+
+//Get leaf off and leaf on SMAP info
+//Leaf off - LOF SMAP
+var SM_2016_LOF = SMAP.filterDate('2016-01-01','2016-03-30');
+var SM_2017_LOF = SMAP.filterDate('2017-01-01','2017-03-30');
+var SM_2018_LOF = SMAP.filterDate('2018-01-01','2018-03-30');
+var SM_2019_LOF = SMAP.filterDate('2019-01-01','2019-03-30');
+
+//Leaf on - LON SMAP -- earlier leaf on period for 2019 to get available scenes
+var SM_2016_LON = SMAP.filterDate('2016-06-01','2016-08-31');
+var SM_2017_LON = SMAP.filterDate('2017-06-01','2017-08-31');
+var SM_2018_LON = SMAP.filterDate('2018-06-01','2018-08-31');
+var SM_2019_LON = SMAP.filterDate('2019-05-20','2019-06-18');
+
+// merge all years of LEAF ON and LEAF OFF
+
+var SM_LEAFOFF = SM_2016_LOF
+  .merge(SM_2017_LOF)
+  .merge(SM_2018_LOF)
+  .merge(SM_2019_LOF)
+  .filterBounds(nys);
+
+var SM_LEAFON = SM_2016_LON
+  .merge(SM_2017_LON)
+  .merge(SM_2018_LON)
+  .merge(SM_2019_LON)
+  .filterBounds(nys);
+                
+// Calculate median "soil moisture index" value
+var soilMedLOFF = SM_LEAFOFF.median().select('smp');
+
+var soilMedLON = SM_LEAFON.median().select('smp');
+
+// Filter out soil moisture levels below 0.5 
+var soilLOFFMask = soilMedLOFF.gte(0.5);
+
+var soilLONMask = soilMedLON.gte(0.5);
+
+// Display settings for soil moisture mask layers
+var soilMoistureVis = {
+  min: 0,
+  max: .5,
+  palette: ['0300ff', '418504', 'efff07', 'efff07', 'ff0303'],
+};
+//Map.addLayer(soilLOFFMask, soilMoistureVis, 'Soils Leaf Off', false);
+//Map.addLayer(soilLONMask, soilMoistureVis, 'Soils Leaf On', false);
+
+// Soil Acidity from USDA SSURGO -----------------
+
+var acidic = acidSoils.lte(6.5);
+
+//Map.addLayer(acidic,{min:0,max:1, palette:['0000FF']},'Acidic Soils', false);
+
+// Visualize Euclidean Distance to Streams-------------------------
+var palettes = require('users/gena/packages:palettes');
+var palette = palettes.kovesi.linear_blue_5_95_c73[7];
+//Map.addLayer(distStream.clip(apipp), {min:0,max:10000,palette:palette},'Streams');
+
+
+//------------------Adding parameters to Random Forest-----------------
+//Create list of bands to input into to classifier
+var bands = ['B4','B3','B2','B5','ST','tasmin','tasmin_1','tasmin_2','tasmin_3'];
+
+// Train Random Forest Model with Dominance classes 0-3 (no helock to pure hemlock)
+// This trained model will be applied to future climate scenarios
+// in order to forecast using conditions we know allow HWA to spread
+var trainedRF = ee.Classifier.randomForest({
+numberOfTrees:10,
+  variablesPerSplit:0,
+  minLeafPopulation:1,
+  bagFraction:0.5,
+  outOfBagMode:false,
+  seed:7}).train(trainingFull, 'HWAPres', bands);
+
+// ---- Classify results of Random Forest on present day if desired
+// ---- (to output predicted areas of HWA range today
+// ---- i.e., possible to test accuracy this way)
+
+//var classifiedRF = presentday.classify(trainedRF);
+
+//Visualize results of Random Forest
+// Map.addLayer(classifiedRF,{min:0,max:1, palette:['green','blue','red']})
+
+//Add Masks to Random Forest results to mask out parameters of interest
+
+// var classifiedNew = 
+//   classifiedRF
+//   .updateMask(elevationMask)
+//   .updateMask(aspectMask)
+//   .updateMask(aspectMask2)
+//   .updateMask(soilLOFFMask)
+//   .updateMask(NLCDMask)
+//   .updateMask(NDVIOFFMask)
+//   .clip(acidic);
+
+//Visualize results
+// Map.addLayer(classifiedNew,
+//   {min: .1, max: 3.9, palette: ['F0000F', 'FF0000','00FF00','0000FF']},
+//   'RF classification');
+
+// // Get a confusion matrix representing resubstitution accuracy.
+// var trainAccuracy = trainedRF.confusionMatrix();
+// print('Resubstitution error matrix: ', trainAccuracy);
+// print('Training overall accuracy: ', trainAccuracy.accuracy());
+
+// //Extract classification at each validation point 
+// var pixels = classifiedNew.reduceRegions({
+//     collection:apValids,
+//     reducer: 'mean',
+//     scale: 30
+// });
+
+// //Export classifications to table for accuracy assessment
+
+// Export.table.toDrive(pixels);
+
+// //Extract habitat distribution model to GeoTIFF
+// Export.image.toDrive({
+//   image: classifiedNew,
+//   region: geometry, 
+//   scale: 30,
+//   maxPixels: 1e13, 
+//   fileFormat: 'GeoTIFF' });
+
+// ---- REPEAT RUNNING CLASSIFICATION - NOW ON FUTURE CLIMATE SCENARIO --------
+
+// Add future climate projections into satellite and distance to streams Image
+
+// NEX-DCP30 Climate data present day for training model
+var winter2045 = NEXDCP30.filterDate('2045-12-01','2046-02-28').min().select('tasmin');
+var winter2046 = NEXDCP30.filterDate('2046-12-01','2047-02-28').min().select('tasmin');
+var winter2047 = NEXDCP30.filterDate('2047-12-01','2048-02-28').min().select('tasmin');
+var winter2048 = NEXDCP30.filterDate('2048-12-01','2049-02-28').min().select('tasmin');
+
+print(winter2046, 'NEX DCP30 winter 2046 median');
+
+// Isolate temperatures above which adelgid can survive in winter
+
+var winter45 = winter2045.gt(253.15);
+var winter46 = winter2046.gt(253.15);
+var winter47 = winter2047.gt(253.15);
+var winter48 = winter2048.gt(253.15);
+
+var winterCollection = ee.ImageCollection([winter45,winter46,winter47,winter48]);
+var winterMask = winterCollection.reduce(ee.Reducer.min());
+
+// Next -- mosaic these four winter masks into one layer with only one band
+
+// Append climate projection images to "presentday" image of L8 and distance to streams bands
+
+var futurePredictors = presentday
+  .addBands(winter2045)
+  .addBands(winter2046)
+  .addBands(winter2047)
+  .addBands(winter2048);
+
+// var futurePredictors = 
+// nir.addBands(blue)
+//   .addBands(green)
+//   .addBands(red)
+//   .addBands(st)
+//   .addBands(winter2045)
+//   .addBands(winter2046)
+//   .addBands(winter2047)
+//   .addBands(winter2048);
+
+// Apply classifier to future parameters image
+var futureClassifiedRF = futurePredictors.classify(trainedRF);
+
+// Visualize results of Random Forest
+
+//Map.addLayer(futureClassifiedRF,{min:0,max:1, palette:['green','blue','red']})
+
+// Add Masks to Random Forest results to mask out parameters of interest
+
+// var futureClassified = 
+//   futureClassifiedRF
+//   .updateMask(elevationMask)
+//   .updateMask(aspectMask)
+//   .updateMask(aspectMask2)
+//   .updateMask(soilLOFFMask)
+//   .updateMask(NLCDMask)
+//   .updateMask(NDVIOFFMask)
+//   .updateMask(acidic);
+  //.updateMask(winterMask);
+
+// Visualize results
+// Map.addLayer(futureClassified,
+//   {min: .1, max: 3.9, palette: ['F0000F', 'FF0000','00FF00','0000FF']},
+//   'future RF classification');
+  
+  var futureClassifiedmask = 
+  futureClassifiedRF
+  .updateMask(elevationMask)
+  .updateMask(aspectMask)
+  .updateMask(aspectMask2)
+  .updateMask(soilLOFFMask)
+  .updateMask(NLCDMask)
+  .updateMask(NDVIOFFMask)
+  .updateMask(acidic)
+  .updateMask(winterMask);
+
+// Visualize results
+Map.addLayer(futureClassifiedmask,
+  {min: .1, max: 3.9, palette: ['F0000F', '0000FF','00FF00','0000FF']},
+  'future RF classification');
+
+Export.image.toDrive({
+  image: futureClassifiedmask,
+  region: geometry, 
+  scale: 30,
+  maxPixels: 1e13, 
+  fileFormat: 'GeoTIFF' });
