@@ -1,0 +1,19 @@
+==============================================
+FoCIS (Forecasting to Combat Invasive Species)
+=============================================
+Asset Code Sheet
+==============================================
+
+This code is also included in the README and is sorted into which script it is used for. 
+
+///Images
+var distStream = ee.Image('users/acbarenblitt/DEVELOPSummer2019/DistStreamSub2')
+var acidSoil = ee.Image('users/acbarenblitt/DEVELOPSummer2019/SoilRaster')
+
+//Feature Collections
+var allValid = ee.FeatureCollection('users/acbarenblitt/DEVELOPSummer2019/20PercPtsValidation')
+var allTrain = ee.FeatureCollection('users/acbarenblitt/DEVELOPSummer2019/80PercPtsTraining')
+var apValid = ee.FeatureCollection('users/acbarenblitt/DEVELOPSummer2019/20PercAPIPP')
+var apTrain = ee.FeatureCollection('users/acbarenblitt/DEVELOPSummer2019/80PercAPIPP')
+var nys = ee.FeatureCollection('users/acbarenblitt/DEVELOPSummer2019/State_Shoreline')
+var apipp = ee.FeatureCollection('users/acbarenblitt/DEVELOPSummer2019/APIPP_final')
